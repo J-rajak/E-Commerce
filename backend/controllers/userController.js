@@ -1,8 +1,36 @@
+require("dotenv").config();
 const User = require("../models/UserModel");
 const Review = require("../models/ReviewModel");
 const Product = require("../models/ProductModel");
 const { hashPassword, comparePasswords } = require("../utils/hashPassword");
 const generateAuthToken = require("../utils/generateAuthToken");
+const nodemailer = require("nodemailer");
+const bcrypt = require("bcrypt");
+
+const { v4: uuidv4 } = require("uuid");
+const path = require("path");
+const UserVerification = require("../models/UserVerificationModel");
+
+const transporter = nodemailer.createTransport({
+  // host: "smtp.ethereal.email",
+  // port: 587,
+  // secure: false,
+  service: "gmail",
+  auth: {
+    user: process.env.AUTH_EMAIL,
+    pass: process.env.AUTH_PASS,
+  },
+});
+
+// testing nodemailer success
+transporter.verify((error, success) => {
+  if (error) {
+    console.log(error);
+  } else {
+    console.log("Ready for message");
+    console.log(success);
+  }
+});
 
 const getUsers = async (req, res, next) => {
   try {
@@ -30,6 +58,8 @@ const registerUser = async (req, res, next) => {
         lastName,
         email: email.toLowerCase(),
         password: hashedPassword,
+      }).then((result) => {
+        sendVerificationEmail(result, res);
       });
       res
         .cookie(
@@ -114,6 +144,171 @@ const loginUser = async (req, res, next) => {
   }
 };
 
+const sendVerificationEmail = ({ _id, email }, res) => {
+  const currentUrl = "http://localhost:3000";
+
+  const uniqueString = uuidv4() + _id;
+
+  // mail options
+  const mailOptions = {
+    from: process.env.AUTH_EMAIL,
+    to: email,
+    subject: "Verify your email",
+    html: `<p>Verify your email address to complete the signup and login into your account.</p><p>This link <b>expires in 6 hours</b>.</p><p>Press <a href=${
+      currentUrl + "/api/users/verify/" + _id + "/" + uniqueString
+    }>here</a> to proceed</p>`,
+  };
+
+  //hash the unique string
+  const saltRounds = 10;
+  bcrypt
+    .hash(uniqueString, saltRounds)
+    .then((hashedUniqueString) => {
+      // set values in user collection
+      const newUserVerification = new UserVerification({
+        userId: _id,
+        uniqueString: hashedUniqueString,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 21600000,
+      });
+
+      newUserVerification
+        .save()
+        .then(() => {
+          transporter
+            .sendMail(mailOptions)
+            .then(() => {
+              // email sent and verification record saved
+              res.json({
+                status: "PENDING",
+                message: "Verification email sent!!",
+              });
+            })
+            .catch((err) => {
+              console.log(err);
+              res.json({
+                status: "FAILED",
+                message: "verification with email failed",
+              });
+            });
+        })
+        .catch((err) => {
+          console.log(err);
+          res.json({
+            status: "FAILED",
+            message: "An error occurred during verification",
+          });
+        });
+    })
+    .catch((err) => {
+      res.json({
+        status: "FAILED",
+        message: "An error occurred while hashing the email data!!!",
+      });
+    });
+};
+
+// get
+// admin/users/verify/:userId/:uniqueString
+const verifyEmail = async (req, res) => {
+  let { userId, uniqueString } = req.params;
+
+  UserVerification.find({ userId })
+    .then((result) => {
+      if (result.length > 0) {
+        //user verification record exists so we proceed
+        const { expiresAt } = result[0];
+        const hashedUniqueString = result[0].uniqueString;
+
+        //checking for expired unique string
+        if (expiresAt < Date.now()) {
+          // record has expired
+          UserVerification.deleteOne({ userId })
+            .then((result) => {
+              User.deleteOne({ _id: userId })
+                .then(() => {
+                  let message = "Link has expired. Please sign up again";
+                  res.redirect(`/users/verified/error=true&message=${message}`);
+                })
+                .catch((err) => {
+                  console.log(err);
+                  let message =
+                    "Clearing user with expired unique string failed";
+                  res.redirect(`/users/verified/error=true&message=${message}`);
+                });
+            })
+            .catch((err) => {
+              console.log(err);
+              let message =
+                "An error occurred while clearing for expired user verification record";
+              res.redirect(`/users/verified/error=true&message=${message}`);
+            });
+        } else {
+          // user verification record exists
+          //compare the hashed unique string
+          bcrypt
+            .compare(uniqueString, hashedUniqueString)
+            .then((result) => {
+              if (result) {
+                // string matches
+                User.updateOne({ _id: userId }, { isVerified: true })
+                  .then(() => {
+                    UserVerification.deleteOne({ userId })
+                      .then(() => {
+                        res.sendFile(
+                          path.join(__dirname, "./../views/verified.html")
+                        );
+                      })
+                      .catch((err) => {
+                        let message =
+                          "An error occurred while finalizing successful verification";
+                        res.redirect(
+                          `/users/verified/error=true&message=${message}`
+                        );
+                      });
+                  })
+                  .catch((err) => {
+                    console.log(err);
+                    let message =
+                      "An error occurred while updating user record";
+                    res.redirect(
+                      `/users/verified/error=true&message=${message}`
+                    );
+                  });
+              } else {
+                // existing record but incorrect verification details passed
+                let message =
+                  "Invalid verification details passed. Please check you inbox";
+                res.redirect(`/users/verified/error=true&message=${message}`);
+              }
+            })
+            .catch((err) => {
+              let message =
+                "An error occurred while comparing the unique strings";
+              res.redirect(`/users/verified/error=true&message=${message}`);
+            });
+        }
+      } else {
+        // user verification record does'nt exist
+        let message =
+          "Account record doesn't exist or has been verified already. Please login or signup";
+        res.redirect(`/users/verified/error=true&message=${message}`);
+      }
+    })
+    .catch((err) => {
+      console.log(err);
+      let message =
+        "An error occurred while checking for existing user verification record";
+      res.redirect(`/users/verified/error=true&message=${message}`);
+    });
+};
+
+// verified
+//get req /verified
+const verification = (req, res) => {
+  res.sendFile(path.join(__dirname, "../views/verified.html"));
+};
+
 const updateUserProfile = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id).orFail();
@@ -150,13 +345,12 @@ const getUserProfile = async (req, res, next) => {
     const user = await User.findById(req.params.id).orFail();
     return res.send(user);
   } catch (err) {
-    next(err)
+    next(err);
   }
-}
+};
 
 const writeReview = async (req, res, next) => {
   try {
-
     const session = await Review.startSession();
 
     // get comment, rating from request.body:
@@ -171,18 +365,28 @@ const writeReview = async (req, res, next) => {
     let reviewId = ObjectId();
 
     session.startTransaction();
-    await Review.create([
-      {
-        _id: reviewId,
-        comment: comment,
-        rating: Number(rating),
-        user: { _id: req.user._id, name: req.user.name + " " + req.user.lastName },
-      }
-    ], { session: session })
+    await Review.create(
+      [
+        {
+          _id: reviewId,
+          comment: comment,
+          rating: Number(rating),
+          user: {
+            _id: req.user._id,
+            name: req.user.name + " " + req.user.lastName,
+          },
+        },
+      ],
+      { session: session }
+    );
 
-    const product = await Product.findById(req.params.productId).populate("reviews").session(session);
+    const product = await Product.findById(req.params.productId)
+      .populate("reviews")
+      .session(session);
 
-    const alreadyReviewed = product.reviews.find((r) => r.user._id.toString() === req.user._id.toString());
+    const alreadyReviewed = product.reviews.find(
+      (r) => r.user._id.toString() === req.user._id.toString()
+    );
     if (alreadyReviewed) {
       await session.abortTransaction();
       session.endSession();
@@ -197,28 +401,33 @@ const writeReview = async (req, res, next) => {
       product.reviewsNumber = 1;
     } else {
       product.reviewsNumber = product.reviews.length;
-      let ratingCalc = prc.map((item) => Number(item.rating)).reduce((sum, item) => sum + item, 0) / product.reviews.length;
-      product.rating = Math.round(ratingCalc)
+      let ratingCalc =
+        prc
+          .map((item) => Number(item.rating))
+          .reduce((sum, item) => sum + item, 0) / product.reviews.length;
+      product.rating = Math.round(ratingCalc);
     }
     await product.save();
 
     await session.commitTransaction();
     session.endSession();
-    res.send('review created')
+    res.send("review created");
   } catch (err) {
     await session.abortTransaction();
-    next(err)
+    next(err);
   }
-}
+};
 
 const getUser = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id).select("name lastName email isAdmin").orFail();
+    const user = await User.findById(req.params.id)
+      .select("name lastName email isAdmin")
+      .orFail();
     return res.send(user);
   } catch (err) {
     next(err);
   }
-}
+};
 
 const updateUser = async (req, res, next) => {
   try {
@@ -227,16 +436,15 @@ const updateUser = async (req, res, next) => {
     user.name = req.body.name || user.name;
     user.lastName = req.body.lastName || user.lastName;
     user.email = req.body.email || user.email;
-    user.isAdmin = req.body.isAdmin
+    user.isAdmin = req.body.isAdmin;
 
     await user.save();
 
     res.send("user updated");
-
   } catch (err) {
     next(err);
   }
-}
+};
 
 const deleteUser = async (req, res, next) => {
   try {
@@ -246,7 +454,19 @@ const deleteUser = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-}
+};
 
-module.exports = { getUsers, registerUser, loginUser, updateUserProfile, getUserProfile, writeReview, getUser, updateUser, deleteUser };
-
+module.exports = {
+  getUsers,
+  registerUser,
+  loginUser,
+  verifyEmail,
+  sendVerificationEmail,
+  verification,
+  updateUserProfile,
+  getUserProfile,
+  writeReview,
+  getUser,
+  updateUser,
+  deleteUser,
+};
