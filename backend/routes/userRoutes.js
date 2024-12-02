@@ -9,8 +9,8 @@ const {
   registerUser,
   loginUser,
   updateUserProfile,
-  verifyEmail,
-  verification,
+  // verifyEmail,
+  // verification,
   getUserProfile,
   writeReview,
   getUser,
@@ -20,8 +20,8 @@ const {
 
 router.post("/register", registerUser);
 router.post("/login", loginUser);
-router.get("/verify/:userId/:uniqueString", verifyEmail);
-router.get("/verified", verification);
+// router.get("/verify/:userId/:uniqueString", verifyEmail);
+// router.get("/verified", verification);
 
 
 //user logged in routes
