@@ -30,6 +30,8 @@ const UserVerification = require("../models/UserVerificationModel");
 //     console.log("Ready for message");
 //     console.log(success);
 //   }
+
+
 // });
 
 const getUsers = async (req, res, next) => {
