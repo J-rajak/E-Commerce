@@ -19,6 +19,9 @@ const verifyIsLoggedIn = (req, res, next) => {
     }
 }
 
+
+
+
 const verifyIsAdmin = (req, res, next) => {
     if(req.user && req.user.isAdmin) {
         next()
