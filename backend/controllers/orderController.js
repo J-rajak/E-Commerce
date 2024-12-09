@@ -8,6 +8,8 @@ const getUserOrders = async (req, res, next) => {
         res.send(orders);
     } catch (err) {
         next(err)
+
+        
     }
 }
 
